@@ -5,6 +5,7 @@ import { Button, LoadingState, PageHeader, Panel, ToastHost } from './components
 import { friendlyError } from './utils/errors.js';
 import { AiModerationSettingsPage } from './pages/AiModerationSettingsPage.jsx';
 import { ConnectFacebookPage } from './pages/ConnectFacebookPage.jsx';
+import { SignInPage } from './pages/SignInPage.jsx';
 import { DashboardPage } from './pages/DashboardPage.jsx';
 import { FacebookCommentsPage } from './pages/FacebookCommentsPage.jsx';
 import { FacebookPagesPage } from './pages/FacebookPagesPage.jsx';
@@ -18,18 +19,23 @@ import { PageDetailPage } from './pages/PageDetailPage.jsx';
 import { CommentDetailPage } from './pages/CommentDetailPage.jsx';
 
 function AdminGate({ children }) {
-  const [access, setAccess] = useState({ loading: true, user: null, error: '' });
+  const [access, setAccess] = useState({ loading: true, user: null, error: '', requiresSignIn: false });
   const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    setAccess({ loading: true, user: null, error: '' });
+    setAccess({ loading: true, user: null, error: '', requiresSignIn: false });
     getAdminAccess()
       .then((result) => {
-        if (!cancelled) setAccess({ loading: false, user: result?.data || null, error: '' });
+        if (!cancelled) setAccess({ loading: false, user: result?.data || null, error: '', requiresSignIn: false });
       })
       .catch((error) => {
-        if (!cancelled) setAccess({ loading: false, user: null, error: friendlyError(error, 'Could not verify administrator access.') });
+        if (cancelled) return;
+        if (error?.status === 401) {
+          setAccess({ loading: false, user: null, error: '', requiresSignIn: true });
+          return;
+        }
+        setAccess({ loading: false, user: null, error: friendlyError(error, 'Could not verify administrator access.'), requiresSignIn: false });
       });
     return () => { cancelled = true; };
   }, [retry]);
@@ -46,6 +52,10 @@ function AdminGate({ children }) {
     );
   }
 
+  if (access.requiresSignIn) {
+    return <SignInPage onSignedIn={() => setRetry((value) => value + 1)} />;
+  }
+
   if (access.error || !access.user) {
     return (
       <div className="mx-auto max-w-xl px-5 py-16">
@@ -53,7 +63,7 @@ function AdminGate({ children }) {
           <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-rose-200">Access check required</p>
           <h1 className="mt-2 text-xl font-semibold text-white">Admin dashboard unavailable</h1>
           <p role="alert" className="mt-3 text-sm leading-6 text-slate-400">{access.error || 'Your sign-in session could not be verified.'}</p>
-          <p className="mt-3 text-xs leading-5 text-slate-500">Sign in through the application’s existing authentication flow, then retry. No dashboard data is loaded until the Laravel API confirms administrator access.</p>
+          <p className="mt-3 text-xs leading-5 text-slate-500">No dashboard data is loaded until the Laravel API confirms that your account is on the administrator allowlist.</p>
           <Button variant="primary" onClick={() => setRetry((value) => value + 1)} className="mt-6">Check access again</Button>
         </Panel>
       </div>

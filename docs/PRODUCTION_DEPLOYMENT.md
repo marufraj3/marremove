@@ -1,6 +1,6 @@
 # Production Deployment and Go-Live Runbook
 
-**Status (2026-10-08): preparation only — not deployed and not yet approved for live Facebook actions.** This runbook describes the existing Laravel API + React/Vite dashboard; it does not add a login provider, webhook subscription automation, or moderation behavior.
+**Status (2026-10-09): deployment preparation only — not deployed and not approved for live Facebook actions.** The dashboard now includes local email/password sign-in backed by Laravel web sessions, CSRF protection, rate limiting, and CLI-only administrator provisioning. It does not include public registration, password reset, external SSO, webhook subscription automation, or new moderation behavior.
 
 ## Release gates and known blockers
 
@@ -8,9 +8,9 @@ Do not call this release production-ready until all of these are resolved:
 
 1. **There is no `backend/composer.lock`.** `composer.json` allows Laravel `^13.17`, but the resolved framework patch version and dependency graph are therefore not pinned. Generate and review the lockfile in a PHP 8.3+/Composer 2 build environment, run the backend tests against it, and commit it. Do not run an unreviewed `composer update` on the production server.
 2. **This workspace has no PHP, Composer, or MySQL runtime.** Native PHP lint, Composer validation/install, PHPUnit, `php artisan migrate --pretend`, and migrations against fresh/existing MySQL databases were not run here. Staging verification is a go-live gate; the static schema review below is not a substitute.
-3. **No production identity provider, `.env`, Meta credentials/Page permissions, Gemini key, or public HTTPS hostname is available here.** No Facebook Page, webhook, Gemini request, or end-to-end production-style flow was exercised. The repository has no local sign-in or user-provisioning flow. Integrate the trusted authenticated session/SSO and populate `MODERATION_ADMIN_EMAILS` before exposing the dashboard.
+3. **No production `.env`, allowlisted administrator account, Meta credentials/Page permissions, Gemini key, or public HTTPS hostname is available here.** No Facebook Page, webhook, Gemini request, or end-to-end production-style flow was exercised. Local email/password sign-in is implemented, but an operator must set `MODERATION_ADMIN_EMAILS` and create an allowlisted user from the CLI. External SSO is not included.
 
-Never disable authentication/authorization to work around item 3. Keep `MODERATION_TEST_MODE=true` and all automatic execution disabled until the staged checks in this document pass.
+Never disable authentication/authorization to work around these gates. Keep `MODERATION_TEST_MODE=true` and all automatic execution disabled until the staged checks in this document pass.
 
 ## 1. Server and runtime requirements
 
@@ -100,6 +100,18 @@ FACEBOOK_WEBHOOK_QUEUE_CONNECTION=database
 GEMINI_QUEUE_CONNECTION=database
 MODERATION_ACTION_QUEUE_CONNECTION=database
 ```
+
+### Provision the first administrator
+
+Set `MODERATION_ADMIN_EMAILS` to the exact trusted admin email address(es). After updating the production `.env`, create the account from the backend directory:
+
+```bash
+php artisan config:clear
+php artisan marremove:admin-create admin@example.com --name="Admin Name"
+php artisan config:cache
+```
+
+The command prompts twice for a password (minimum 12 characters) without echoing or taking it as a command-line argument. It refuses addresses outside the configured allowlist; rerunning for an existing account requires confirmation and resets its password. There is no public registration or password-reset flow. Never place the password in chat, shell arguments, logs, or source control. External SSO is not implemented.
 
 Also configure a stable `APP_KEY`; routine deployments must never regenerate it. Page Access Tokens are encrypted in the database with this key, so key loss/rotation can make stored tokens unreadable. Back up the key separately from the database, with stricter access controls. Laravel's `APP_PREVIOUS_KEYS` can support a planned key rotation, but test the migration/re-encryption procedure before rotating.
 
@@ -422,7 +434,9 @@ Encrypt the dump at rest, restrict backup-reader permissions, and suppress shell
 
 | Symptom | First checks |
 |---|---|
-| Dashboard gives 401/“Admin dashboard unavailable” | Existing trusted login/session integration, same-origin cookie, `APP_URL`, secure-cookie/proxy configuration, and session table. Verify user is authenticated; this repo does not provision accounts. |
+| Dashboard redirects to sign-in / API returns 401 | Sign in with the allowlisted local admin account. If no account exists, set `MODERATION_ADMIN_EMAILS`, run `config:clear`, then `php artisan marremove:admin-create <email>` from `backend/`; verify `SESSION_SECURE_COOKIE=true` on HTTPS and that the `sessions` table/session driver work. |
+| Sign-in returns 422 | Confirm the email exactly matches `MODERATION_ADMIN_EMAILS`, the account was created/reset through the CLI, and `config:clear` ran after `.env` changes. The response intentionally does not disclose whether the email is unregistered, non-admin, or has a wrong password. |
+| Sign-in returns 419 / CSRF mismatch | Confirm same-origin HTTPS `/api/auth/csrf` and `/api/auth/login`, `XSRF-TOKEN` and session cookies are accepted for `shop.aveen.xyz`, PHP can write sessions, and the app is behind a correctly configured trusted proxy. Do not disable CSRF middleware. |
 | Admin endpoint returns 403 | Exact lowercased user email is in `MODERATION_ADMIN_EMAILS`; config cache was rebuilt; do not weaken middleware. |
 | CSRF/session failure on POST | Frontend and API are same HTTPS origin; XSRF cookie/header and trusted proxy scheme are preserved; do not move the frontend to another origin without a reviewed design. |
 | `/api/health` works but sync/actions never complete | Health is liveness-only. Check supervisor/PaaS worker, `QUEUE_CONNECTION` and per-service connections, database `jobs`/`failed_jobs`, retry-after, and worker logs. |
@@ -446,7 +460,7 @@ Encrypt the dump at rest, restrict backup-reader permissions, and suppress shell
 
 Run the following only after the lockfile/build/runtime prerequisites are resolved, in staging with a real public HTTPS callback or the provider's appropriate safe test setup. Do not use production credentials in local feature tests.
 
-- [ ] Trusted sign-in creates an authenticated Laravel session; allowlisted admin can open dashboard; non-admin is denied.
+- [ ] Local sign-in accepts only a CLI-provisioned, allowlisted admin; session rotates at login, CSRF is enforced, logout invalidates the session, and a valid non-admin is denied.
 - [ ] `/up` and `/api/health` return safe liveness responses; database and worker health are independently verified.
 - [ ] Connect an approved test Page through the existing server-side endpoint; Page name/id display correctly and token never appears in UI, response, logs, or bundle.
 - [ ] Queue Page feed/post/comment sync; verify counts, pagination/caps, ownership scoping, and retry/failure reporting.
@@ -457,17 +471,17 @@ Run the following only after the lockfile/build/runtime prerequisites are resolv
 - [ ] Verify invalid webhook signatures are rejected, queue failure is visible, action retry is bounded, and app/page tokens/secrets remain absent from logs and API responses.
 - [ ] Backups restore in isolation; logs and worker supervision are observable; rollback procedure is rehearsed.
 
-This workspace could not perform this end-to-end checklist: it has no PHP/Composer/MySQL runtime, identity provider/session, Meta credentials/Page permissions/public callback, or Gemini key. Do not mark this checklist complete based on frontend tests alone.
+This workspace could not perform this end-to-end checklist: it has no PHP/Composer/MySQL runtime, production `.env` or provisioned administrator session, Meta credentials/Page permissions/public callback, or Gemini key. The login unit/feature tests are present but have not run here; do not mark this checklist complete based on frontend tests alone.
 
 ## 18. Audit and test results from this workspace
 
 - `npm ci`: passed using `frontend/package-lock.json`; Node 22.22.3 / npm 10.9.8.
-- `npm test`: **25 tests passed across 7 files**.
-- `npm run build`: passed; Vite produced `frontend/dist` (41 modules transformed).
+- `npm test`: **26 tests passed across 7 files**, including the local sign-in UI path.
+- `npm run build`: passed; Vite produced `frontend/dist` (43 modules transformed).
 - `npm audit --omit=dev`: **0 vulnerabilities**.
 - Production build scan: no credential-pattern matches or `LARAVEL_API_URL` / `127.0.0.1:8000` dev proxy setting; `VITE_API_BASE_URL` is relative `/api`.
 - `.gitignore` ignores root, backend, and frontend `.env` files while allowing `.env.example`; no actual `.env` file was present in this workspace.
-- A syntax-only parser accepted all 98 backend PHP files, but it does not replace native `php -l` or runtime tests. PHP, Composer, MySQL, and PHPUnit were unavailable; Composer lockfile is absent. Backend tests, migrations, PHP lints, dependency platform checks, live Meta/Gemini calls, and end-to-end deployment remain **not verified**.
+- A JavaScript PHP parser parsed all 101 backend PHP files with no syntax errors, but this does not replace native `php -l` or runtime tests. PHP, Composer, MySQL, and PHPUnit are unavailable here; backend feature tests, migrations, dependency platform checks, live Meta/Gemini calls, and end-to-end deployment remain **not verified**. The Composer lockfile is absent.
 
 ## Official references
 

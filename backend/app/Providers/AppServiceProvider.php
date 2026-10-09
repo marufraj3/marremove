@@ -29,6 +29,16 @@ class AppServiceProvider extends ServiceProvider
         };
 
         RateLimiter::for('api', static fn (Request $request): Limit => Limit::perMinute(600)->by($keyFor($request)));
+        RateLimiter::for('login', static function (Request $request): array {
+            $ip = $request->ip() ?? 'unknown';
+            $rawEmail = $request->input('email');
+            $email = is_string($rawEmail) ? strtolower(substr(trim($rawEmail), 0, 255)) : '';
+
+            return [
+                Limit::perMinute(5)->by('login:'.$ip.':'.$email),
+                Limit::perMinute(30)->by('login-ip:'.$ip),
+            ];
+        });
         RateLimiter::for('facebook-connect', static fn (Request $request): Limit => Limit::perMinute(10)->by($keyFor($request)));
         RateLimiter::for('facebook-sync', static fn (Request $request): Limit => Limit::perMinute(6)->by($keyFor($request)));
         RateLimiter::for('moderation-test', static fn (Request $request): Limit => Limit::perMinute(60)->by($keyFor($request)));

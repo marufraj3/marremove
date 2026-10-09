@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\FacebookWebhookController;
 use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\ModerationActionController;
 use App\Http\Controllers\Api\ModerationRuleController;
+use App\Http\Controllers\Api\SessionAuthController;
 use App\Http\Middleware\EnsureModerationAdmin;
 use Illuminate\Support\Facades\Route;
 
@@ -24,6 +25,15 @@ Route::post('/facebook/webhook', [FacebookWebhookController::class, 'receive'])
 // The React dashboard uses Laravel's existing web-session guard. Keep the API
 // same-origin, start the session, and retain Laravel's CSRF middleware.
 Route::middleware('web')->group(function (): void {
+    Route::get('/auth/csrf', [SessionAuthController::class, 'csrf'])
+        ->name('auth.csrf');
+    Route::post('/auth/login', [SessionAuthController::class, 'login'])
+        ->middleware('throttle:login')
+        ->name('auth.login');
+    Route::post('/auth/logout', [SessionAuthController::class, 'logout'])
+        ->middleware('auth')
+        ->name('auth.logout');
+
     Route::get('/facebook/webhook/status', [FacebookWebhookController::class, 'status'])
         ->middleware(['auth', EnsureModerationAdmin::class])
         ->name('facebook.webhook.status');

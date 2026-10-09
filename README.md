@@ -47,8 +47,11 @@ composer install
 Set `DB_DATABASE`, `DB_USERNAME`, and `DB_PASSWORD` in `backend/.env`. `FACEBOOK_GRAPH_VERSION` is configured there (the example is `v26.0`). Gemini settings are backend-only; AI recommendations remain disabled until `GEMINI_ENABLED=true` and a server-side `GEMINI_API_KEY` are configured. Never put the key in frontend environment variables. Then run:
 
 ```bash
+# Set MODERATION_ADMIN_EMAILS=admin@example.com in backend/.env before proceeding.
 php artisan key:generate
 php artisan migrate
+php artisan config:clear
+php artisan marremove:admin-create admin@example.com --name="Local Admin"
 php artisan serve --host=0.0.0.0 --port=8000
 ```
 
@@ -61,9 +64,9 @@ npm install
 npm run dev -- --host 0.0.0.0
 ```
 
-Open `http://localhost:5173/` for the admin dashboard. Connect a Page at `/facebook/pages/connect`; both routes require the existing authenticated admin session. The frontend uses relative `/api` requests; Vite proxies them server-side to Laravel at `http://127.0.0.1:8000`. Set `LARAVEL_API_URL` in `frontend/.env` if Laravel runs elsewhere.
+Open `http://localhost:5173/` for the admin dashboard. The first page load presents the local email/password sign-in form. Only email addresses in `MODERATION_ADMIN_EMAILS` can sign in; create an account with the server-side Artisan command above. Public registration, password reset, and Facebook Login are not included. Connect a Page at `/facebook/pages/connect` after signing in. The frontend uses relative `/api` requests; Vite proxies them server-side to Laravel at `http://127.0.0.1:8000`. Set `LARAVEL_API_URL` in `frontend/.env` if Laravel runs elsewhere.
 
-The connection endpoint is `POST /api/facebook-pages/connect` and requires an authenticated Laravel app user. This project does not add a local login flow or Facebook login. Until the app has a local authenticated session, authenticated API calls return `401`; do not remove the authentication middleware to bypass this requirement.
+The connection endpoint is `POST /api/facebook-pages/connect` and requires an authenticated, allowlisted Laravel admin session. Login is handled by Laravel's web-session guard with CSRF protection, session-ID rotation, and a login rate limit. Do not remove the authentication middleware or the server-side admin allowlist.
 
 For queued synchronization, moderation, and Facebook actions, keep a database queue worker running in another backend terminal:
 
@@ -142,7 +145,7 @@ The Step 5 rule evaluation remains deterministic and unchanged. Its `keep`, `rev
 
 ### Admin security and routes
 
-Set `MODERATION_ADMIN_EMAILS` in `backend/.env` to a comma-separated allowlist of authenticated app-user email addresses. An empty allowlist denies every moderation-admin endpoint. Clear Laravel's configuration cache after changing it. All rule list/create/edit/delete/enable-disable and test endpoints require both authentication and an email on this server-side allowlist.
+Set `MODERATION_ADMIN_EMAILS` in `backend/.env` to a comma-separated allowlist of administrator email addresses. An empty allowlist denies sign-in and every moderation-admin endpoint. After configuring the email, run `php artisan config:clear`, then `php artisan marremove:admin-create admin@example.com --name="Admin Name"`; the command prompts for a minimum 12-character password without echoing it. The same command can reset an existing allowlisted account after confirmation. There is no public registration or password-reset route. All moderation endpoints require both an authenticated session and the server-side email allowlist.
 
 - `GET /api/moderation/pages` — active connected Pages available for rule scope; returns Page names and Graph IDs only.
 - `GET /api/moderation/rules` — list and search rules. Optional filters: `search`, `facebook_page_id` (Graph Page ID or `global`), `action`, `rule_type`, and `sort_priority=asc|desc`.
@@ -280,6 +283,9 @@ The frontend uses a lightweight pathname route map (no router dependency), one r
 
 New or extended API endpoints used by Step 9:
 
+- `GET /api/auth/csrf` — starts a same-origin web session and issues Laravel's XSRF cookie; it does not return the token in JSON.
+- `POST /api/auth/login` — accepts email/password only for a `MODERATION_ADMIN_EMAILS` address, rotates the session ID, and returns a safe user summary. Protected by CSRF and a per-email/IP rate limit.
+- `POST /api/auth/logout` — authenticated session logout; invalidates the session and rotates the CSRF token.
 - `GET /api/moderation/access` — authenticated administrator access check and safe user summary; the admin middleware denies non-admins before dashboard data loads.
 - `GET /api/moderation/dashboard?page_id={local Page row ID}` — optimized aggregate statistics, chart buckets, and recent moderation/action activity. The optional local Page ID must belong to the signed-in user.
 - `GET /api/facebook/comments/{comment row ID}` — safe comment and decision evidence, scoped to an owned Page.
@@ -294,14 +300,14 @@ Frontend tests are run with `cd frontend && npm test`; they cover dashboard aggr
 
 ## STEP 10: production deployment and audit checklist
 
-This section records production requirements for the existing system; it does not add a login provider or change the Laravel/React architecture. `.env.example` remains a local-development template. Create a separate production environment file or inject values from a secrets manager—never commit production values.
+This section records production requirements for the existing system. Local email/password session sign-in is implemented, with CLI-only account provisioning; there is no public registration, password-reset page, or external SSO provider. `.env.example` remains a local-development template. Create a separate production environment file or inject values from a secrets manager—never commit production values.
 
 ### Required production configuration
 
 - Set `APP_ENV=production`, `APP_DEBUG=false`, and `APP_URL=https://<public-host>`. Use HTTPS end to end (including the Meta callback), enable HSTS and appropriate security headers at the TLS/reverse-proxy layer, and set `TRUSTED_PROXIES` to only known proxy IPs/CIDRs (or leave it empty for direct connections); never trust arbitrary client-supplied forwarded headers. Do not expose Laravel's development server in production.
 - Provision a strong, private `APP_KEY` once and keep it stable. The Page Access Token is stored through Laravel's encrypted model cast; rotating `APP_KEY` without a planned token re-encryption/reconnect process makes existing credentials unreadable. Do not run `php artisan key:generate` during routine deploys.
 - Configure production MySQL/PDO credentials (`DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`), durable backups, and a real shared session/cache/queue store appropriate to the deployment. The initial migration `0001_01_01_000000_create_users_table.php` also creates the `sessions` table required by `SESSION_DRIVER=database`. Explicitly set `SESSION_SECURE_COOKIE=true`, `SESSION_HTTP_ONLY=true`, `SESSION_SAME_SITE=lax`, `SESSION_DRIVER=database`, and preferably `SESSION_ENCRYPT=true`; scope `SESSION_DOMAIN` narrowly or leave it unset for a single host.
-- Set `MODERATION_ADMIN_EMAILS` to the exact verified email addresses of trusted authenticated administrators. The repository intentionally has **no local sign-in/user-provisioning flow**: integrate the existing trusted authentication/SSO session before making the dashboard reachable. Do not bypass `auth` or `EnsureModerationAdmin` to make it appear accessible.
+- Set `MODERATION_ADMIN_EMAILS` to the exact email addresses of trusted administrators, then create each password-authenticated account from the backend terminal with `php artisan marremove:admin-create <email> --name="<display name>"`. The command prompts for the password privately; there is no public registration or password-reset flow. Use strong unique passwords, keep the email allowlist private, and do not bypass `auth` or `EnsureModerationAdmin`. External SSO is not implemented.
 - Set `FACEBOOK_GRAPH_VERSION=v26.0`. For webhooks, set backend-only `FACEBOOK_APP_SECRET` and a separate high-entropy `FACEBOOK_WEBHOOK_VERIFY_TOKEN`; register the public HTTPS callback, Page `feed` subscription, required reviewed permissions, and Page task in Meta. Obtain Page tokens only through the existing authenticated HTTPS flow. The Graph reads/mutations and permission requirements documented above may require App Review/Advanced Access; a source-code audit cannot grant or live-verify them.
 - Gemini is optional and remains disabled unless both `GEMINI_ENABLED=true` and the Page AI switch are enabled. When used, set `GEMINI_API_KEY` only on the backend, choose the documented model, and restart workers after configuration changes. The stateless tester uses the provider; it does not change stored comments.
 
@@ -377,11 +383,11 @@ After a deployment/configuration change, verify `/up` and `/api/health`, inspect
 
 ### Audit verification and limitations
 
-Automated feature tests are written to fake Meta and Gemini HTTP calls and fake/inspect queued jobs; they must never use real Page tokens or execute a real destructive Facebook action. Page Feed and Gemini Interactions API behavior has been checked against the current official versioned documentation linked above, but no live provider credentials or Meta Page permissions were available for end-to-end verification. This checkout has no PHP/Composer runtime, and no `backend/composer.lock` is present, so the Laravel suite and resolved framework/dependency versions are not verified. Generate and review a lockfile in a PHP 8.3+/Composer 2 build environment, commit it, then run the Laravel suite before release. The React suite/build can be run locally as shown below. On 2026-10-08, the frontend suite passed (25 tests across 7 files) and the production Vite build succeeded. A syntax-only PHP parser accepted all 98 backend PHP files, but this is not a substitute for native `php -l` validation or the Laravel suite; run those before release. The system also does not implement account provisioning/login; a trusted authenticated user/session and admin allowlist are deployment prerequisites.
+Automated feature tests are written to fake Meta and Gemini HTTP calls and fake/inspect queued jobs; they must never use real Page tokens or execute a real destructive Facebook action. Page Feed and Gemini Interactions API behavior has been checked against the current official versioned documentation linked above, but no live provider credentials or Meta Page permissions were available for end-to-end verification. This checkout has no PHP/Composer runtime, and no `backend/composer.lock` is present, so the Laravel suite and resolved framework/dependency versions are not verified. Generate and review a lockfile in a PHP 8.3+/Composer 2 build environment, commit it, then run the Laravel suite before release. The frontend suite now passes 26 tests across 7 files and the production Vite build succeeds. A JavaScript PHP parser parsed all 101 backend PHP files without syntax errors, but this is not a substitute for native `php -l` or runtime tests. Local email/password sign-in is implemented, but an operator must configure `MODERATION_ADMIN_EMAILS` and provision the first admin through the hidden-password Artisan command; public registration, password reset, and external SSO are not included.
 
 ## Tests and verification
 
-The mocked Laravel tests cover the existing connection/sync/webhook/manual/AI flows, Step 7 precedence/thresholds/overrides, Step 8 hide, delete, unhide, invalid token, permission denial, transient retry, permanent failure, duplicate prevention, final-keep override, test mode, disabled auto-execution, job dispatch, safe logs, Page ownership, complaint protection, already-hidden state, and admin-only routes. No real Meta or Gemini credential/network call is required for the feature tests.
+The mocked Laravel tests cover local session sign-in/logout, allowlist enforcement, the connection/sync/webhook/manual/AI flows, Step 7 precedence/thresholds/overrides, Step 8 hide, delete, unhide, invalid token, permission denial, transient retry, permanent failure, duplicate prevention, final-keep override, test mode, disabled auto-execution, job dispatch, safe logs, Page ownership, complaint protection, already-hidden state, and admin-only routes. No real Meta or Gemini credential/network call is required for the feature tests.
 
 ```bash
 cd backend

@@ -1,4 +1,7 @@
 import { useState } from 'react';
+import { signOut } from '../api/authService.js';
+import { emitToast } from './ui.jsx';
+import { friendlyError } from '../utils/errors.js';
 
 const groups = [
   {
@@ -78,6 +81,37 @@ function Brand() {
   );
 }
 
+function SignOutButton({ compact = false }) {
+  const [isSigningOut, setIsSigningOut] = useState(false);
+
+  async function handleSignOut() {
+    if (isSigningOut) return;
+    setIsSigningOut(true);
+    try {
+      await signOut();
+      window.location.reload();
+    } catch (error) {
+      if (error?.status === 401) {
+        window.location.reload();
+        return;
+      }
+      emitToast(friendlyError(error, 'Could not sign out. Please try again.'), 'error');
+      setIsSigningOut(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleSignOut}
+      disabled={isSigningOut}
+      className={`inline-flex min-h-9 items-center justify-center rounded-xl border border-white/10 px-3 text-xs font-semibold text-slate-300 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white disabled:cursor-not-allowed disabled:opacity-50 ${compact ? '' : 'w-full'}`}
+    >
+      {isSigningOut ? 'Signing out…' : 'Sign out'}
+    </button>
+  );
+}
+
 export function AppShell({ children, activePage = 'dashboard' }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -92,20 +126,24 @@ export function AppShell({ children, activePage = 'dashboard' }) {
           <p className="text-xs font-semibold text-slate-200">Secure by design</p>
           <p className="mt-1.5 text-[11px] leading-5 text-slate-500">Page credentials stay server-side. Facebook actions are queued by Laravel.</p>
         </div>
+        <div className="mt-3"><SignOutButton /></div>
       </aside>
 
       <div className="min-h-screen lg:pl-[264px]">
         <header className="sticky top-0 z-20 flex min-h-[64px] items-center justify-between border-b border-white/[0.07] bg-[#080d19]/95 px-4 backdrop-blur sm:px-6 lg:hidden">
           <Brand />
-          <button
-            type="button"
-            aria-label={mobileOpen ? 'Close navigation' : 'Open navigation'}
-            aria-expanded={mobileOpen}
-            onClick={() => setMobileOpen((open) => !open)}
-            className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 text-lg text-slate-200 hover:bg-white/5"
-          >
-            {mobileOpen ? '×' : '☰'}
-          </button>
+          <div className="flex items-center gap-2">
+            <SignOutButton compact />
+            <button
+              type="button"
+              aria-label={mobileOpen ? 'Close navigation' : 'Open navigation'}
+              aria-expanded={mobileOpen}
+              onClick={() => setMobileOpen((open) => !open)}
+              className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 text-lg text-slate-200 hover:bg-white/5"
+            >
+              {mobileOpen ? '×' : '☰'}
+            </button>
+          </div>
         </header>
 
         {mobileOpen && (

@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   deleteModerationRule: vi.fn(),
   testModerationRules: vi.fn(),
   getAdminAccess: vi.fn(),
+  prepareAuthSession: vi.fn(),
+  signIn: vi.fn(),
+  signOut: vi.fn(),
   connectFacebookPage: vi.fn(),
   getDashboardOverview: vi.fn(),
 }));
@@ -23,6 +26,11 @@ vi.mock('../api/moderationRuleService.js', () => ({
   testModerationRules: mocks.testModerationRules,
 }));
 vi.mock('../api/adminService.js', () => ({ getAdminAccess: mocks.getAdminAccess }));
+vi.mock('../api/authService.js', () => ({
+  prepareAuthSession: mocks.prepareAuthSession,
+  signIn: mocks.signIn,
+  signOut: mocks.signOut,
+}));
 vi.mock('../api/facebookPageService.js', async (importOriginal) => ({ ...(await importOriginal()), connectFacebookPage: mocks.connectFacebookPage }));
 vi.mock('../api/dashboardService.js', () => ({ getDashboardOverview: mocks.getDashboardOverview }));
 
@@ -39,6 +47,9 @@ beforeEach(() => {
   mocks.deleteModerationRule.mockReset().mockResolvedValue({ message: 'deleted' });
   mocks.testModerationRules.mockReset().mockResolvedValue({ data: { matched: true, rule_name: 'Spam guard', action: 'review', match_reason: 'Matched keyword', reason: 'Review recommended.' } });
   mocks.getAdminAccess.mockReset().mockResolvedValue({ data: { id: 1, name: 'Administrator' } });
+  mocks.prepareAuthSession.mockReset().mockResolvedValue('');
+  mocks.signIn.mockReset().mockResolvedValue({ data: { id: 1, name: 'Administrator', email: 'admin@example.test' } });
+  mocks.signOut.mockReset().mockResolvedValue({ message: 'Signed out successfully.' });
   mocks.connectFacebookPage.mockReset().mockResolvedValue({ data: { id: 9, page_name: 'Northwind', facebook_page_id: '99887766' }, message: 'Connected.' });
   mocks.getDashboardOverview.mockReset().mockResolvedValue({ data: { stats: {}, charts: {}, recent_activity: [], recent_actions: [], range: {} } });
 });
@@ -78,6 +89,24 @@ describe('admin access and Page connection security', () => {
     expect(screen.getByText('Your account does not have administrator access to this area.')).toBeInTheDocument();
     expect(screen.queryByRole('navigation', { name: 'Admin navigation' })).not.toBeInTheDocument();
     expect(mocks.getDashboardOverview).not.toHaveBeenCalled();
+  });
+
+  it('offers local sign-in for a guest and rechecks admin authorization after login', async () => {
+    const user = userEvent.setup();
+    mocks.getAdminAccess.mockRejectedValueOnce(new ApiError('Authentication is required.', { status: 401, payload: { message: 'Authentication is required.' } }));
+    window.history.replaceState({}, '', '/dashboard');
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Email'), 'admin@example.test');
+    await user.type(screen.getByLabelText('Password'), 'a-private-test-password');
+    await user.click(screen.getByRole('button', { name: 'Sign in securely' }));
+
+    await waitFor(() => expect(mocks.prepareAuthSession).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.signIn).toHaveBeenCalledWith('admin@example.test', 'a-private-test-password'));
+    expect(await screen.findByRole('navigation', { name: 'Admin navigation' })).toBeInTheDocument();
+    expect(mocks.getAdminAccess).toHaveBeenCalledTimes(2);
+    expect(screen.queryByDisplayValue('a-private-test-password')).not.toBeInTheDocument();
   });
 
   it('clears the submitted Page token from the form and never writes it to local storage', async () => {

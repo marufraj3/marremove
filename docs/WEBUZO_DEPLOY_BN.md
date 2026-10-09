@@ -31,6 +31,7 @@ cd ~/shop.aveen.xyz/backend
 APP_ENV=production
 APP_DEBUG=false
 APP_URL=https://shop.aveen.xyz
+SESSION_SECURE_COOKIE=true
 DB_CONNECTION=mysql
 DB_HOST=<Webuzo database host>
 DB_PORT=3306
@@ -43,6 +44,7 @@ MODERATION_AUTO_HIDE_ENABLED=false
 MODERATION_AUTO_DELETE_ENABLED=false
 MODERATION_ALLOW_AI_HIDE=false
 MODERATION_ALLOW_AI_DELETE=false
+MODERATION_ADMIN_EMAILS=<your trusted administrator email>
 GEMINI_ENABLED=false
 ```
 
@@ -50,9 +52,12 @@ Existing `APP_KEY` থাকলে তা বদলাবেন না। APP_KE
 
 ```bash
 /usr/local/apps/php83/bin/php artisan config:clear
+/usr/local/apps/php83/bin/php artisan marremove:admin-create admin@example.com --name="Shop Admin"
 /usr/local/apps/php83/bin/php artisan config:cache
 /usr/local/apps/php83/bin/php artisan route:cache
 ```
+
+`marremove:admin-create` চালালে password দুইবার চাইবে; টাইপ করা password terminal-এ দেখা যাবে না। অন্তত 12 অক্ষরের শক্তিশালী password দিন—command line বা chat-এ password লিখবেন না। একই allowlisted email দিয়ে পরে command চালালে password reset-এর আগে confirmation চাইবে। Public registration/password-reset page নেই। Login page-এ এই email/password ব্যবহার করুন।
 
 ## 4) Composer/source files
 
@@ -62,12 +67,14 @@ Existing `APP_KEY` থাকলে তা বদলাবেন না। APP_KE
 
 ## 5) গুরুত্বপূর্ণ go-live blocker
 
-এই codebase-এ sign-in/SSO flow নেই। API ও moderation routes authenticated admin session চায়; authorization সরিয়ে dashboard খোলা নিরাপদ নয়। Public admin dashboard live করার আগে আপনার trusted login/SSO পদ্ধতি integrate করতে হবে।
+এই release-এ local email/password sign-in আছে; শুধু `MODERATION_ADMIN_EMAILS`-এ থাকা account-ই login করতে পারে। Public registration বা password reset নেই, SSO-ও নেই। Strong password দিয়ে CLI command-এ admin তৈরি না করা পর্যন্ত dashboard ব্যবহারযোগ্য হবে না। API authorization সরাবেন না। নতুন login flow চালু করার আগে ZIP-এর latest source deploy করুন।
 
-একটি persistent queue worker-ও দরকার; Webuzo-র process manager/Supervisor-এ সেট করুন (terminal session-এ foreground-এ চালাবেন না):
+Queue job চালাতে persistent worker দরকার। Webuzo-তে Supervisor/Process Manager থাকলে সেখানে run করুন। না থাকলে Webuzo **Cron Jobs**-এ প্রতি মিনিটে schedule (`* * * * *`) দিয়ে নিচের command ব্যবহার করা যায়; এটি queue খালি হলে নিজে exit করে এবং `flock` overlap আটকায়:
 
 ```bash
-cd /home/aveenxyz/shop.aveen.xyz/backend && /usr/local/apps/php83/bin/php artisan queue:work database --queue=default --sleep=1 --tries=3 --timeout=900 --max-time=3600
+cd /home/aveenxyz/shop.aveen.xyz/backend && /bin/flock -n /home/aveenxyz/shop.aveen.xyz/backend/storage/queue-worker.lock /usr/local/apps/php83/bin/php artisan queue:work database --queue=default --sleep=1 --tries=3 --timeout=900 --stop-when-empty >> /home/aveenxyz/shop.aveen.xyz/backend/storage/logs/queue-worker.log 2>&1
 ```
+
+Hosting provider যদি cron process-এ ছোট runtime limit দেয় বা দীর্ঘ job মেরে ফেলে, Supervisor চালুর জন্য provider-কে বলুন। Queue worker চালু হলে queued job সত্যিই execute হয়—test-এর জন্য real Facebook/Gemini কাজ queue করবেন না।
 
 প্রথম go-live smoke test-এ `MODERATION_TEST_MODE=true` ও automatic actions off রাখুন। SQL/health checks Meta বা Gemini-র live action চালায় না।
