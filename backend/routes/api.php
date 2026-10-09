@@ -41,6 +41,12 @@ Route::middleware('web')->group(function (): void {
     Route::post('/facebook-pages/connect', [FacebookPageController::class, 'store'])
         ->middleware(['auth', 'throttle:facebook-connect'])
         ->name('facebook-pages.connect');
+    Route::post('/facebook-pages/discover-managed', [FacebookPageController::class, 'discoverManaged'])
+        ->middleware(['auth', EnsureModerationAdmin::class, 'throttle:facebook-pages-import'])
+        ->name('facebook-pages.discover-managed');
+    Route::post('/facebook-pages/import-managed', [FacebookPageController::class, 'importManaged'])
+        ->middleware(['auth', EnsureModerationAdmin::class, 'throttle:facebook-pages-import'])
+        ->name('facebook-pages.import-managed');
 
     Route::middleware('auth')->prefix('facebook')->group(function (): void {
         Route::get('/pages', [FacebookPageController::class, 'index'])->name('facebook.pages.index');

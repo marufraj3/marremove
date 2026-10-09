@@ -8,8 +8,12 @@ use App\Models\FacebookPage;
 use App\Models\FacebookPost;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Contracts\Encryption\DecryptException;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Throwable;
 
 final class FacebookPageService
@@ -25,10 +29,196 @@ final class FacebookPageService
     ) {
     }
 
+    /**
+     * Discover Pages using a one-time User Access Token, but do not connect any
+     * Page until the user explicitly selects it. Page tokens are encrypted in
+     * short-lived server-side cache and never returned to the browser.
+     *
+     * @return array{import_id: string, expires_in_seconds: int, pages: list<array{facebook_page_id: string, page_name: string}>}
+     */
+    public function discoverManagedPages(User $user, string $userAccessToken): array
+    {
+        if (trim($userAccessToken) === '') {
+            throw new FacebookPageConnectionException('Enter a Facebook User Access Token.', 422);
+        }
+
+        $managedPages = $this->graphApi->paginate(
+            'me/accounts',
+            $userAccessToken,
+            'id,name,access_token',
+            101,
+            [],
+            'page_discovery',
+        );
+
+        if (count($managedPages) > 100) {
+            throw new FacebookPageConnectionException(
+                'More than 100 Pages were returned. Narrow the Facebook account access before starting a new discovery.',
+                422,
+            );
+        }
+
+        $cachedPages = [];
+        foreach ($managedPages as $managedPage) {
+            $facebookPageId = $this->graphId($managedPage['id'] ?? null);
+            $pageName = is_string($managedPage['name'] ?? null) ? trim($managedPage['name']) : '';
+            $pageAccessToken = is_string($managedPage['access_token'] ?? null)
+                ? trim($managedPage['access_token'])
+                : '';
+
+            if ($facebookPageId === null || $pageName === '' || $pageAccessToken === '') {
+                continue;
+            }
+
+            // Keep only one entry per Page ID if Meta returns duplicates across cursors.
+            $cachedPages[$facebookPageId] = [
+                'facebook_page_id' => $facebookPageId,
+                'page_name' => $pageName,
+                'encrypted_access_token' => Crypt::encryptString($pageAccessToken),
+            ];
+        }
+
+        if ($cachedPages === []) {
+            throw new FacebookPageConnectionException(
+                'No connectable Pages were returned. Check that the User Access Token has pages_show_list and that the Facebook account can access the Pages.',
+                422,
+            );
+        }
+
+        $importId = (string) Str::uuid();
+        $expiresInSeconds = 300;
+        Cache::put($this->managedPageImportCacheKey($importId), [
+            'user_id' => (string) $user->getKey(),
+            'pages' => $cachedPages,
+        ], now()->addSeconds($expiresInSeconds));
+
+        return [
+            'import_id' => $importId,
+            'expires_in_seconds' => $expiresInSeconds,
+            'pages' => array_values(array_map(
+                static fn (array $page): array => [
+                    'facebook_page_id' => $page['facebook_page_id'],
+                    'page_name' => $page['page_name'],
+                ],
+                $cachedPages,
+            )),
+        ];
+    }
+
+    /**
+     * Connect only explicitly selected Pages from a recent discovery request.
+     * Cache data is owner-bound, short-lived, and deleted after one import attempt.
+     *
+     * @param list<string> $facebookPageIds
+     * @return array{connected: int, failed: int, pages: list<array{facebook_page_id: string|null, page_name: string, status: string, message: string}>}
+     */
+    public function importSelectedManagedPages(User $user, string $importId, array $facebookPageIds): array
+    {
+        $cacheKey = $this->managedPageImportCacheKey($importId);
+        $import = Cache::get($cacheKey);
+
+        if (! is_array($import) || ! is_array($import['pages'] ?? null)) {
+            throw new FacebookPageConnectionException(
+                'This Page list has expired. Find the Pages again and make a new selection.',
+                410,
+            );
+        }
+
+        if ((string) ($import['user_id'] ?? '') !== (string) $user->getKey()) {
+            throw new FacebookPageConnectionException('This Page list is not available to this account.', 404);
+        }
+
+        $availablePages = $import['pages'];
+        $selectedIds = array_values(array_unique(array_filter(
+            $facebookPageIds,
+            static fn (mixed $id): bool => is_string($id) && $id !== '',
+        )));
+
+        if ($selectedIds === []) {
+            throw new FacebookPageConnectionException('Select at least one Facebook Page to connect.', 422);
+        }
+
+        foreach ($selectedIds as $facebookPageId) {
+            if (! isset($availablePages[$facebookPageId])) {
+                throw new FacebookPageConnectionException(
+                    'The selection contains a Page that was not in the discovered list. Find the Pages again and retry.',
+                    422,
+                );
+            }
+        }
+
+        $results = [];
+        $connected = 0;
+
+        try {
+            foreach ($selectedIds as $facebookPageId) {
+                $pageInfo = $availablePages[$facebookPageId];
+                $pageName = is_string($pageInfo['page_name'] ?? null) ? $pageInfo['page_name'] : 'Facebook Page';
+
+                try {
+                    $pageAccessToken = Crypt::decryptString((string) ($pageInfo['encrypted_access_token'] ?? ''));
+                } catch (DecryptException) {
+                    $results[] = [
+                        'facebook_page_id' => $facebookPageId,
+                        'page_name' => $pageName,
+                        'status' => 'failed',
+                        'message' => 'The temporary Page credential could not be read. Find the Pages again and retry.',
+                    ];
+                    continue;
+                }
+
+                try {
+                    // Meta supplied this Page ID, name, and Page token in the authenticated
+                    // /me/accounts response, so avoid making one extra Graph call per Page.
+                    $page = $this->persistPageConnection($user, $pageAccessToken, [
+                        'facebook_page_id' => $facebookPageId,
+                        'page_name' => $pageName,
+                        'page_username' => null,
+                        'page_category' => null,
+                        'page_picture_url' => null,
+                    ]);
+                    $results[] = [
+                        'facebook_page_id' => $page->facebook_page_id,
+                        'page_name' => $page->page_name,
+                        'status' => 'connected',
+                        'message' => 'Connected.',
+                    ];
+                    $connected++;
+                } catch (FacebookPageConnectionException $exception) {
+                    $results[] = [
+                        'facebook_page_id' => $facebookPageId,
+                        'page_name' => $pageName,
+                        'status' => 'failed',
+                        'message' => $exception->getMessage(),
+                    ];
+                }
+            }
+        } finally {
+            Cache::forget($cacheKey);
+        }
+
+        return [
+            'connected' => $connected,
+            'failed' => count($results) - $connected,
+            'pages' => $results,
+        ];
+    }
+
+    private function managedPageImportCacheKey(string $importId): string
+    {
+        return 'facebook-page-import:'.hash('sha256', $importId);
+    }
+
     public function connect(User $user, string $pageAccessToken): FacebookPage
     {
         $pageData = $this->fetchPageInformation($pageAccessToken);
 
+        return $this->persistPageConnection($user, $pageAccessToken, $pageData);
+    }
+
+    /** @param array{facebook_page_id: string, page_name: string, page_username: string|null, page_category: string|null, page_picture_url: string|null} $pageData */
+    private function persistPageConnection(User $user, string $pageAccessToken, array $pageData): FacebookPage
+    {
         return DB::transaction(function () use ($user, $pageAccessToken, $pageData): FacebookPage {
             $page = FacebookPage::query()
                 ->where('facebook_page_id', $pageData['facebook_page_id'])
@@ -50,9 +240,9 @@ final class FacebookPageService
 
             $page->fill([
                 'page_name' => $pageData['page_name'],
-                'page_username' => $pageData['page_username'],
-                'page_category' => $pageData['page_category'],
-                'page_picture_url' => $pageData['page_picture_url'],
+                'page_username' => $pageData['page_username'] ?? $page->page_username,
+                'page_category' => $pageData['page_category'] ?? $page->page_category,
+                'page_picture_url' => $pageData['page_picture_url'] ?? $page->page_picture_url,
                 'page_access_token' => $pageAccessToken,
                 // Meta's Page-info response does not include token expiry metadata.
                 'token_expires_at' => null,

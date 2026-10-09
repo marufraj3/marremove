@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   signIn: vi.fn(),
   signOut: vi.fn(),
   connectFacebookPage: vi.fn(),
+  discoverManagedFacebookPages: vi.fn(),
+  importSelectedManagedFacebookPages: vi.fn(),
   getDashboardOverview: vi.fn(),
 }));
 
@@ -31,7 +33,12 @@ vi.mock('../api/authService.js', () => ({
   signIn: mocks.signIn,
   signOut: mocks.signOut,
 }));
-vi.mock('../api/facebookPageService.js', async (importOriginal) => ({ ...(await importOriginal()), connectFacebookPage: mocks.connectFacebookPage }));
+vi.mock('../api/facebookPageService.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  connectFacebookPage: mocks.connectFacebookPage,
+  discoverManagedFacebookPages: mocks.discoverManagedFacebookPages,
+  importSelectedManagedFacebookPages: mocks.importSelectedManagedFacebookPages,
+}));
 vi.mock('../api/dashboardService.js', () => ({ getDashboardOverview: mocks.getDashboardOverview }));
 
 import { ApiError } from '../api/httpClient.js';
@@ -51,6 +58,8 @@ beforeEach(() => {
   mocks.signIn.mockReset().mockResolvedValue({ data: { id: 1, name: 'Administrator', email: 'admin@example.test' } });
   mocks.signOut.mockReset().mockResolvedValue({ message: 'Signed out successfully.' });
   mocks.connectFacebookPage.mockReset().mockResolvedValue({ data: { id: 9, page_name: 'Northwind', facebook_page_id: '99887766' }, message: 'Connected.' });
+  mocks.discoverManagedFacebookPages.mockReset().mockResolvedValue({ data: { import_id: '00000000-0000-4000-8000-000000000001', expires_in_seconds: 300, pages: [] } });
+  mocks.importSelectedManagedFacebookPages.mockReset().mockResolvedValue({ data: { connected: 0, failed: 0, pages: [] }, message: 'Connected 0 Page(s); 0 failed.' });
   mocks.getDashboardOverview.mockReset().mockResolvedValue({ data: { stats: {}, charts: {}, recent_activity: [], recent_actions: [], range: {} } });
 });
 
@@ -119,5 +128,49 @@ describe('admin access and Page connection security', () => {
     expect(field).toHaveValue('');
     expect(window.localStorage.getItem('page_access_token')).toBeNull();
     expect(screen.queryByText('page-token-secret-test')).not.toBeInTheDocument();
+  });
+
+  it('discovers Pages, requires an explicit selection, and imports only the selected IDs', async () => {
+    const user = userEvent.setup();
+    mocks.discoverManagedFacebookPages.mockResolvedValueOnce({
+      message: 'Found 2 Facebook Pages.',
+      data: {
+        import_id: '00000000-0000-4000-8000-000000000001',
+        expires_in_seconds: 300,
+        pages: [
+          { facebook_page_id: 'page-1001', page_name: 'Northwind Books' },
+          { facebook_page_id: 'page-1002', page_name: 'Southwind Books' },
+        ],
+      },
+    });
+    mocks.importSelectedManagedFacebookPages.mockResolvedValueOnce({
+      message: 'Connected 1 Page(s); 0 failed.',
+      data: {
+        connected: 1,
+        failed: 0,
+        pages: [{ facebook_page_id: 'page-1002', page_name: 'Southwind Books', status: 'connected', message: 'Connected.' }],
+      },
+    });
+
+    render(<ConnectFacebookPage />);
+    const tokenField = screen.getByLabelText('User Access Token');
+    await user.type(tokenField, 'one-user-token');
+    await user.click(screen.getByRole('button', { name: 'Find Pages' }));
+
+    expect(await screen.findByText('Northwind Books')).toBeInTheDocument();
+    expect(screen.getByText('Southwind Books')).toBeInTheDocument();
+    expect(tokenField).toHaveValue('');
+    expect(mocks.discoverManagedFacebookPages).toHaveBeenCalledWith('one-user-token');
+
+    const connectButton = screen.getByRole('button', { name: 'Connect selected Pages (0)' });
+    expect(connectButton).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: /Southwind Books/ }));
+    await user.click(screen.getByRole('button', { name: 'Connect selected Pages (1)' }));
+
+    await waitFor(() => expect(mocks.importSelectedManagedFacebookPages).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000001',
+      ['page-1002'],
+    ));
+    expect(await screen.findByText('Connected 1 Page(s); 0 failed.')).toBeInTheDocument();
   });
 });

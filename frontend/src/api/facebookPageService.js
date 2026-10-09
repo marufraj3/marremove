@@ -10,6 +10,26 @@ export function connectFacebookPage(pageAccessToken) {
   });
 }
 
+export function discoverManagedFacebookPages(userAccessToken) {
+  return apiRequest('/facebook-pages/discover-managed', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ user_access_token: userAccessToken }),
+  });
+}
+
+export function importSelectedManagedFacebookPages(importId, facebookPageIds) {
+  return apiRequest('/facebook-pages/import-managed', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ import_id: importId, facebook_page_ids: facebookPageIds }),
+  });
+}
+
 export function listFacebookPages(options = {}) {
   return apiRequest('/facebook/pages', options);
 }

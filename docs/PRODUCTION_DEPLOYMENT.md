@@ -124,7 +124,8 @@ Also configure a stable `APP_KEY`; routine deployments must never regenerate it.
 | `FACEBOOK_APP_SECRET` | Required to verify webhook POST signatures. Backend-only secret. |
 | `FACEBOOK_WEBHOOK_VERIFY_TOKEN` | Required to complete Meta's callback GET verification. Generate a long random value different from the App Secret. It is sent in the verification query string; redact query strings in proxy/access/tracing logs for this route. |
 | `FACEBOOK_APP_ID` | **Not consumed by this application.** There is no Facebook Login/OAuth SDK flow. Configure the App ID in Meta's Developer Dashboard when setting up the app/webhook; do not add an unused runtime variable. |
-| Page Access Token | Not an environment variable. An authenticated admin submits it to the existing HTTPS Page-connect endpoint; Laravel encrypts it at rest. Do not log request bodies or expose it in responses, jobs, or browser storage. |
+| Page Access Token | Not an environment variable. An authenticated admin submits it to the HTTPS Page-connect endpoint; Laravel encrypts it at rest. Do not log request bodies or expose it in responses, jobs, or browser storage. |
+| Bulk User Access Token | Not an environment variable. The admin submits it for one HTTPS Page-discovery request; it is not persisted or returned. Per-Page credentials are encrypted with `APP_KEY` in server-side cache for five minutes, owner-bound, and removed after selection processing or expiry. Disable request-body logging on `/api/facebook-pages/discover-managed` as well as the single-Page connect endpoint. |
 | `GEMINI_ENABLED` | Keep `false` until the backend key/model are verified. To use AI, set `true` and enable AI for the intended Page(s). |
 | `GEMINI_API_KEY` | Required only when Gemini is enabled. Backend secret only; never a `VITE_` variable. |
 | `GEMINI_MODEL` | Default/documented model: `gemini-3.8-flash`. The model was checked against Google's current model reference on 2026-10-08; re-check that reference at deploy time. |
@@ -132,6 +133,12 @@ Also configure a stable `APP_KEY`; routine deployments must never regenerate it.
 | `GEMINI_MAX_RETRIES` | Internal provider retries, clamped to 0–5; default 3. Provider failures/invalid or incomplete responses resolve safely to `review`. |
 | `GEMINI_QUEUE_CONNECTION` | Defaults to `database`; ensure a worker consumes that connection. |
 | `MODERATION_TEST_MODE` | Must be `true` for the first production smoke test. In local/testing environments Meta actions are simulated regardless of this flag. |
+
+### Bulk Page connection and Meta permission limits
+
+The authenticated admin UI has a two-step flow: `POST /api/facebook-pages/discover-managed` submits one User Access Token and returns Page names/IDs plus a short-lived opaque import ID; the admin then selects Pages and `POST /api/facebook-pages/import-managed` connects only those selected IDs. The server verifies the import belongs to the signed-in admin and that the selected IDs came from that discovery. It does not auto-connect every discovered Page. Discovery is capped at 100 Pages; temporary Page credentials are encrypted in server-side cache for five minutes and deleted after the selection attempt. No database migration is required for this feature.
+
+Meta's `pages_show_list` permission is required to discover Pages, and the token-granting Facebook account must have access to them. This bulk workflow does not bypass App Review or permission approval. A Page may connect even while comment/post reading remains unavailable; sync can still require Meta-approved `pages_read_engagement` and `pages_read_user_content` and a suitable Page task. If `pages_read_user_content` is not granted, do not promise that comment sync will work or try to bypass that restriction.
 
 The app currently uses Google's Interactions API at `https://generativelanguage.googleapis.com/v1beta/interactions`, with the key in the server-side `x-goog-api-key` header and stateless structured output. References: [Gemini Interactions changes](https://ai.google.dev/gemini-api/docs/interactions-breaking-changes-may-2026), [quickstart](https://ai.google.dev/gemini-api/docs/quickstart), and [Gemini 3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash). No provider key or live request was available during this workspace audit.
 
@@ -339,7 +346,7 @@ Use hashed Vite assets with long cache lifetimes and keep `index.html` short/no-
 
 - Serve the dashboard, Laravel API, `/up`, and webhook callback only over HTTPS. Set `APP_URL=https://<public-host>` and register `https://<public-host>/api/facebook/webhook` with Meta.
 - At a TLS-terminating proxy, pass the correct forwarded protocol/host and trust only known proxy addresses. Do not trust client-supplied forwarded headers from arbitrary internet clients.
-- The Meta verification protocol sends `hub.verify_token` in a GET query string. Configure web-server, CDN, WAF, APM, and access logs to redact or omit query strings on `/api/facebook/webhook`; a default `$request`/full-URL access log could record the verification token. Disable request-body logging on the Page-connect endpoint (the submitted token is in the POST body) and header capture for `Authorization` / `x-goog-api-key`.
+- The Meta verification protocol sends `hub.verify_token` in a GET query string. Configure web-server, CDN, WAF, APM, and access logs to redact or omit query strings on `/api/facebook/webhook`; a default `$request`/full-URL access log could record the verification token. Disable request-body logging on both `/api/facebook-pages/connect` and `/api/facebook-pages/discover-managed` (the submitted Page/User tokens are in POST bodies), and header capture for `Authorization` / `x-goog-api-key`.
 - Source code uses HTTPS for Graph and Gemini and did not contain a TLS-verification bypass. Do not disable outbound certificate verification.
 - `/api/health` and `/up` are public liveness routes and must not be treated as authenticated admin data endpoints.
 
@@ -462,7 +469,7 @@ Run the following only after the lockfile/build/runtime prerequisites are resolv
 
 - [ ] Local sign-in accepts only a CLI-provisioned, allowlisted admin; session rotates at login, CSRF is enforced, logout invalidates the session, and a valid non-admin is denied.
 - [ ] `/up` and `/api/health` return safe liveness responses; database and worker health are independently verified.
-- [ ] Connect an approved test Page through the existing server-side endpoint; Page name/id display correctly and token never appears in UI, response, logs, or bundle.
+- [ ] Connect an approved test Page through the single-Page flow, then test bulk discovery with a test User Access Token: Page names/IDs are listed, selection is required, only selected Pages connect, temporary credentials expire/delete, and neither User nor Page tokens appear in UI responses or logs. Confirm `pages_show_list` is present; separately verify comment-read permissions and Page task before expecting sync.
 - [ ] Queue Page feed/post/comment sync; verify counts, pagination/caps, ownership scoping, and retry/failure reporting.
 - [ ] Meta verifies the exact HTTPS callback and `feed` field is subscribed for the Page; a new signed comment event is queued/processed once, and a duplicate is idempotent.
 - [ ] Manual rule result, Gemini result, combined final decision, review queue, action audit, and dashboard statistics agree for representative clean, complaint, negative-feedback, spam, and uncertain samples.
@@ -476,12 +483,12 @@ This workspace could not perform this end-to-end checklist: it has no PHP/Compos
 ## 18. Audit and test results from this workspace
 
 - `npm ci`: passed using `frontend/package-lock.json`; Node 22.22.3 / npm 10.9.8.
-- `npm test`: **26 tests passed across 7 files**, including the local sign-in UI path.
+- `npm test`: **27 tests passed across 7 files**, including the explicit bulk Page-selection flow.
 - `npm run build`: passed; Vite produced `frontend/dist` (43 modules transformed).
 - `npm audit --omit=dev`: **0 vulnerabilities**.
 - Production build scan: no credential-pattern matches or `LARAVEL_API_URL` / `127.0.0.1:8000` dev proxy setting; `VITE_API_BASE_URL` is relative `/api`.
 - `.gitignore` ignores root, backend, and frontend `.env` files while allowing `.env.example`; no actual `.env` file was present in this workspace.
-- A JavaScript PHP parser parsed all 101 backend PHP files with no syntax errors, but this does not replace native `php -l` or runtime tests. PHP, Composer, MySQL, and PHPUnit are unavailable here; backend feature tests, migrations, dependency platform checks, live Meta/Gemini calls, and end-to-end deployment remain **not verified**. The Composer lockfile is absent.
+- `php-parser` 3.7.0 parsed all 104 backend PHP files with no syntax errors, but this does not replace native `php -l` or runtime tests. PHP, Composer, MySQL, and PHPUnit are unavailable here; backend feature tests, migrations, dependency platform checks, live Meta/Gemini calls, and end-to-end deployment remain **not verified**. The Composer lockfile is absent.
 
 ## Official references
 

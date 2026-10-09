@@ -1,6 +1,6 @@
 # Webuzo release notes (Bangla)
 
-প্রস্তুত archive: `release/webuzo-marremove-existing-site.zip`। এটি `shop.aveen.xyz`-এর আগে থেকেই তৈরি Webuzo installation আপডেট করার জন্য; ZIP-টি `/home/aveenxyz/shop.aveen.xyz`-এ extract করুন। এটি কোনো live deployment করে না। Archive-এ `.env`, `vendor/`, `storage/` বা server-এর Composer lock রাখা হবে না—extract করার সময় server-এর এগুলো অক্ষত রাখুন। phpMyAdmin-এ import করার SQL: `docs/webuzo_mysql_import.sql`।
+প্রস্তুত archive: `release/webuzo-marremove-existing-site.zip`। এটি `shop.aveen.xyz`-এর আগে থেকেই তৈরি Webuzo installation আপডেট করার জন্য; ZIP-টি `/home/aveenxyz/shop.aveen.xyz`-এ extract করুন। এটি কোনো live deployment করে না। Archive-এ `.env`, `vendor/`, `storage/`-এর কোনো runtime data/log বা server-এর Composer lock নেই (শুধু `.gitignore` placeholder আছে)—extract করার সময় server-এর এগুলো অক্ষত রাখুন। phpMyAdmin-এ import করার SQL: `docs/webuzo_mysql_import.sql`।
 
 ## 1) Domain/PHP
 
@@ -68,6 +68,13 @@ Existing `APP_KEY` থাকলে তা বদলাবেন না। APP_KE
 ## 5) গুরুত্বপূর্ণ go-live blocker
 
 এই release-এ local email/password sign-in আছে; শুধু `MODERATION_ADMIN_EMAILS`-এ থাকা account-ই login করতে পারে। Public registration বা password reset নেই, SSO-ও নেই। Strong password দিয়ে CLI command-এ admin তৈরি না করা পর্যন্ত dashboard ব্যবহারযোগ্য হবে না। API authorization সরাবেন না। নতুন login flow চালু করার আগে ZIP-এর latest source deploy করুন।
+
+## 6) Facebook Page সংযোগ: একাধিক Page বেছে নিন
+
+1. Admin হিসেবে `https://shop.aveen.xyz/facebook/pages/connect` খুলুন। **Choose Pages from one User Access Token** অংশে একটি Facebook User Access Token দিন এবং **Find Pages** চাপুন। এই token browser থেকে backend-এ HTTPS POST-এ যাবে; browser DevTools-এর Network panel-এ request body দেখা সম্ভব, তাই শুধু বিশ্বস্ত admin browser ব্যবহার করুন এবং request-body logging বন্ধ রাখুন। Token Marremove-এ সংরক্ষণ করা হয় না।
+2. Meta যদি Pages ফেরত দেয়, নাম/ID-সহ তালিকা দেখাবে। যে Page-গুলো যুক্ত করতে চান শুধু সেগুলোর checkbox দিন, তারপর **Connect selected Pages** চাপুন। কোনো Page স্বয়ংক্রিয়ভাবে connect হয় না। নির্বাচনটি পাঁচ মিনিটের মধ্যে শেষ করুন; মেয়াদ শেষ হলে আবার **Find Pages** চালান। Page token browser-এ ফেরত আসে না; server-side encrypted cache-এ সাময়িক থাকে এবং import attempt-এর পর মুছে যায়।
+3. Page তালিকা দেখাতে Meta-র `pages_show_list` permission এবং Facebook account-এর ওই Pages-এ access প্রয়োজন। Bulk flow এই permission বা Meta App Review এড়িয়ে যায় না। Page connect হলেও `pages_read_user_content` (এবং প্রযোজ্য ক্ষেত্রে `pages_read_engagement`) অনুমোদিত না থাকলে comment sync কাজ নাও করতে পারে—এটি bypass করা যাবে না।
+4. এই bulk feature-এ নতুন database table/migration নেই; আগের SQL import file বদলানোর দরকার নেই। তবে feature পেতে latest release source ও rebuilt frontend files deploy করতে হবে।
 
 Queue job চালাতে persistent worker দরকার। Webuzo-তে Supervisor/Process Manager থাকলে সেখানে run করুন। না থাকলে Webuzo **Cron Jobs**-এ প্রতি মিনিটে schedule (`* * * * *`) দিয়ে নিচের command ব্যবহার করা যায়; এটি queue খালি হলে নিজে exit করে এবং `flock` overlap আটকায়:
 

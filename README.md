@@ -86,6 +86,17 @@ The example uses Laravel's database queue. The existing jobs migration creates t
 - Reconnecting the same Page as its owner updates that single row after re-validating the new token. Another account cannot take over an already-owned Page.
 - `.env` files are ignored by Git. Never put Facebook or Gemini secrets in frontend environment variables or browser storage. The token input is cleared on submission and is not persisted or returned; however, browser DevTools can inspect any request body sent by the browser, so it is not technically possible to guarantee the submitted token is invisible in that browser's Network panel. Use the app over HTTPS outside local development.
 
+### Bulk connection with explicit Page selection
+
+The admin-only bulk flow is a two-step process; it does **not** automatically connect every Page:
+
+1. Enter one Facebook **User Access Token** in `/facebook/pages/connect`. `POST /api/facebook-pages/discover-managed` calls Meta's `/me/accounts?fields=id,name,access_token` edge and returns Page names/IDs plus an opaque import ID. `pages_show_list` and access to those Pages are required to discover them.
+2. Select the desired checkboxes and press **Connect selected Pages**. `POST /api/facebook-pages/import-managed` accepts only the import ID and selected Graph Page IDs. The server checks that the import belongs to the signed-in admin and that every selected ID was in the returned list; unselected Pages are not connected.
+
+The submitted User Access Token is not persisted or returned. Per-Page tokens are encrypted with Laravel's `APP_KEY` in server-side cache for five minutes, then decrypted only to connect selected Pages. The cache entry is owner-bound and removed after the selection attempt; a new discovery is needed after expiry. Discovery is capped at 100 Pages and the endpoints are throttled. Page credentials that successfully connect are encrypted in the existing database model as usual.
+
+This bulk flow only simplifies Page discovery and connection. It does **not** bypass Meta permission or App Review requirements: without `pages_show_list`, discovery fails; comment sync may still be blocked unless Meta has approved/granted the required read permissions, including `pages_read_user_content` and `pages_read_engagement` where applicable. A Page can connect successfully while comment reading remains unavailable.
+
 ## Page post and comment synchronization (Step 3)
 
 After connecting an owned Page, visit `/facebook/comments`, choose the Page, and press **Sync Now**. The request enqueues a `SyncFacebookPageJob`; it does not wait for Meta's paginated requests. Keep the database queue worker above running. The UI polls the safe Page status until it is `completed` or `failed`. A failed sync exposes only a sanitized message. Retry a failed sync with **Sync Now**.
@@ -296,7 +307,7 @@ New or extended API endpoints used by Step 9:
 
 The dashboard also reuses the existing Page list/connect/sync, moderation-rule CRUD/test, AI settings/test, moderation override/action, health, and webhook APIs. Backend ownership checks validate each Page or comment; frontend-supplied IDs are never treated as authorization. Page tokens, Meta App Secrets, and Gemini keys are not returned or logged. Automatic moderation and Facebook mutations remain in the existing Laravel services/queue; this dashboard does not replace or duplicate that engine.
 
-Frontend tests are run with `cd frontend && npm test`; they cover dashboard aggregation/filtering, Page sync/disconnect, paginated comment filters and confirmed overrides, review-queue decisions, rule CRUD/tester behavior, AI/moderation settings, action-log detail and confirmed manual actions, webhook/system status, admin denial, and transient Page-token handling.
+Frontend tests are run with `cd frontend && npm test`; they cover dashboard aggregation/filtering, Page sync/disconnect, single-Page token handling, the explicit bulk Page discovery/selection flow, paginated comment filters and confirmed overrides, review-queue decisions, rule CRUD/tester behavior, AI/moderation settings, action-log detail and confirmed manual actions, webhook/system status, admin denial, and transient Page-token handling.
 
 ## STEP 10: production deployment and audit checklist
 
@@ -383,14 +394,15 @@ After a deployment/configuration change, verify `/up` and `/api/health`, inspect
 
 ### Audit verification and limitations
 
-Automated feature tests are written to fake Meta and Gemini HTTP calls and fake/inspect queued jobs; they must never use real Page tokens or execute a real destructive Facebook action. Page Feed and Gemini Interactions API behavior has been checked against the current official versioned documentation linked above, but no live provider credentials or Meta Page permissions were available for end-to-end verification. This checkout has no PHP/Composer runtime, and no `backend/composer.lock` is present, so the Laravel suite and resolved framework/dependency versions are not verified. Generate and review a lockfile in a PHP 8.3+/Composer 2 build environment, commit it, then run the Laravel suite before release. The frontend suite now passes 26 tests across 7 files and the production Vite build succeeds. A JavaScript PHP parser parsed all 101 backend PHP files without syntax errors, but this is not a substitute for native `php -l` or runtime tests. Local email/password sign-in is implemented, but an operator must configure `MODERATION_ADMIN_EMAILS` and provision the first admin through the hidden-password Artisan command; public registration, password reset, and external SSO are not included.
+Automated feature tests are written to fake Meta and Gemini HTTP calls and fake/inspect queued jobs; they must never use real Page tokens or execute a real destructive Facebook action. Page Feed and Gemini Interactions API behavior has been checked against the current official versioned documentation linked above, but no live provider credentials or Meta Page permissions were available for end-to-end verification. This checkout has no PHP/Composer runtime, and no `backend/composer.lock` is present, so the Laravel suite and resolved framework/dependency versions are not verified. Generate and review a lockfile in a PHP 8.3+/Composer 2 build environment, commit it, then run the Laravel suite before release. The frontend suite passes 27 tests across 7 files and the production Vite build succeeds. `php-parser` 3.7.0 parsed all 104 backend PHP files without syntax errors, but this is not a substitute for native `php -l` or runtime tests. Local email/password sign-in is implemented, but an operator must configure `MODERATION_ADMIN_EMAILS` and provision the first admin through the hidden-password Artisan command; public registration, password reset, and external SSO are not included.
 
 ## Tests and verification
 
-The mocked Laravel tests cover local session sign-in/logout, allowlist enforcement, the connection/sync/webhook/manual/AI flows, Step 7 precedence/thresholds/overrides, Step 8 hide, delete, unhide, invalid token, permission denial, transient retry, permanent failure, duplicate prevention, final-keep override, test mode, disabled auto-execution, job dispatch, safe logs, Page ownership, complaint protection, already-hidden state, and admin-only routes. No real Meta or Gemini credential/network call is required for the feature tests.
+The mocked Laravel tests cover local session sign-in/logout, allowlist enforcement, single-Page connection, selected bulk Page discovery/import, encrypted short-lived credentials and token-safe responses, sync/webhook/manual/AI flows, Step 7 precedence/thresholds/overrides, Step 8 hide/delete/unhide, permission denial, bounded retries, safe logs, Page ownership, complaint protection, and admin-only routes. No real Meta or Gemini credential/network call is required for feature tests.
 
 ```bash
 cd backend
+php artisan test --filter=FacebookManagedPageImportTest
 php artisan test --filter=FacebookPageConnectionTest
 php artisan test --filter=FacebookSyncTest
 php artisan test --filter=FacebookWebhookTest
@@ -410,4 +422,4 @@ npm run build
 
 ## Scope
 
-Step 2 provides backend Page-token submission, Meta validation, encrypted Page-token persistence, ownership handling, and safe Page details. Step 3 adds queued post/comment synchronization. Step 4 adds signed webhook intake and queued comment refreshes. Step 5 adds manual rule-based recommendations. Step 6 adds queued Gemini classifications. Step 7 combines the results into a saved final recommendation, per-Page policy/settings, a decision explainer, and admin overrides. Step 8 adds queued, audited, safeguarded Facebook Page comment hide/unhide/delete actions. No later step is included.
+Step 2 provides backend single-Page connection plus a User-token discovery flow with explicit selection, short-lived encrypted Page-token handoff, ownership checks, encrypted persistence, and token-safe Page details. Step 3 adds queued post/comment synchronization. Step 4 adds signed webhook intake and queued comment refreshes. Step 5 adds manual rule-based recommendations. Step 6 adds queued Gemini classifications. Step 7 combines the results into a saved final recommendation, per-Page policy/settings, a decision explainer, and admin overrides. Step 8 adds queued, audited, safeguarded Facebook Page comment hide/unhide/delete actions. No later step is included.

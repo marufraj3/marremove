@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Exceptions\FacebookPageConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\ConnectFacebookPageRequest;
+use App\Http\Requests\DiscoverManagedFacebookPagesRequest;
+use App\Http\Requests\ImportSelectedManagedFacebookPagesRequest;
 use App\Http\Resources\FacebookPageResource;
 use App\Models\User;
 use App\Services\FacebookPageService;
@@ -51,6 +53,59 @@ final class FacebookPageController extends Controller
         return (new FacebookPageResource($page))
             ->additional(['message' => 'Facebook Page connected successfully.'])
             ->response();
+    }
+
+    public function discoverManaged(
+        DiscoverManagedFacebookPagesRequest $request,
+        FacebookPageService $facebookPageService,
+    ): JsonResponse {
+        $user = $request->user();
+        if (! $user instanceof User) {
+            return response()->json(['message' => 'Authentication is required.'], 401);
+        }
+
+        try {
+            $result = $facebookPageService->discoverManagedPages(
+                $user,
+                $request->validated('user_access_token'),
+            );
+        } catch (FacebookPageConnectionException $exception) {
+            return response()->json(['message' => $exception->getMessage()], $exception->statusCode);
+        }
+
+        return response()->json([
+            'message' => sprintf('Found %d Facebook Page(s). Select the Pages to connect.', count($result['pages'])),
+            'data' => $result,
+        ]);
+    }
+
+    public function importManaged(
+        ImportSelectedManagedFacebookPagesRequest $request,
+        FacebookPageService $facebookPageService,
+    ): JsonResponse {
+        $user = $request->user();
+        if (! $user instanceof User) {
+            return response()->json(['message' => 'Authentication is required.'], 401);
+        }
+
+        try {
+            $result = $facebookPageService->importSelectedManagedPages(
+                $user,
+                $request->validated('import_id'),
+                $request->validated('facebook_page_ids'),
+            );
+        } catch (FacebookPageConnectionException $exception) {
+            return response()->json(['message' => $exception->getMessage()], $exception->statusCode);
+        }
+
+        return response()->json([
+            'message' => sprintf(
+                'Connected %d Page(s); %d failed.',
+                $result['connected'],
+                $result['failed'],
+            ),
+            'data' => $result,
+        ]);
     }
 
     public function disconnect(Request $request, \App\Models\FacebookPage $page): JsonResponse

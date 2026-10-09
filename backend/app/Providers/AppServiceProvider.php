@@ -40,6 +40,7 @@ class AppServiceProvider extends ServiceProvider
             ];
         });
         RateLimiter::for('facebook-connect', static fn (Request $request): Limit => Limit::perMinute(10)->by($keyFor($request)));
+        RateLimiter::for('facebook-pages-import', static fn (Request $request): Limit => Limit::perMinute(3)->by($keyFor($request)));
         RateLimiter::for('facebook-sync', static fn (Request $request): Limit => Limit::perMinute(6)->by($keyFor($request)));
         RateLimiter::for('moderation-test', static fn (Request $request): Limit => Limit::perMinute(60)->by($keyFor($request)));
         RateLimiter::for('gemini-test', static fn (Request $request): Limit => Limit::perMinute(10)->by($keyFor($request)));

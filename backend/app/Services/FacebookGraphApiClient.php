@@ -243,33 +243,41 @@ final class FacebookGraphApiClient
         }
 
         if ($code === 190 && $subcode === 463) {
-            return new FacebookPageConnectionException(
-                'This Facebook Page Access Token has expired. Generate a new Page Access Token.',
-                422,
-                $code,
-            );
+            $message = $context === 'page_discovery'
+                ? 'This Facebook User Access Token has expired. Generate a new User Access Token.'
+                : 'This Facebook Page Access Token has expired. Generate a new Page Access Token.';
+
+            return new FacebookPageConnectionException($message, 422, $code);
         }
 
         if ($code === 190) {
-            return new FacebookPageConnectionException(
-                'Invalid Facebook Page Access Token.',
-                422,
-                $code,
-            );
+            $message = $context === 'page_discovery'
+                ? 'Invalid Facebook User Access Token.'
+                : 'Invalid Facebook Page Access Token.';
+
+            return new FacebookPageConnectionException($message, 422, $code);
         }
 
         if (in_array($code, [10, 200, 299, 283], true)) {
-            $message = $context === 'page_connection'
-                ? 'This Page Access Token is missing permissions needed to read Page information.'
-                : 'The Page Access Token lacks permission to read Page posts or comments. Check the Page reading permissions and assigned Page tasks.';
+            if ($context === 'page_discovery') {
+                $message = 'The User Access Token cannot list these Pages. Grant pages_show_list and confirm the Facebook account can access them.';
+            } elseif ($context === 'page_connection') {
+                $message = 'This Page Access Token is missing permissions needed to read Page information.';
+            } else {
+                $message = 'The Page Access Token lacks permission to read Page posts or comments. Check the Page reading permissions and assigned Page tasks.';
+            }
 
             return new FacebookPageConnectionException($message, 422, $code);
         }
 
         if ($code === 100) {
-            $message = $context === 'page_connection'
-                ? 'The token did not resolve to a Facebook Page. Confirm the Page ID and Page Access Token.'
-                : 'Facebook could not find the requested Page or post.';
+            if ($context === 'page_discovery') {
+                $message = 'Facebook could not list Pages with this User Access Token. Check pages_show_list and account access.';
+            } elseif ($context === 'page_connection') {
+                $message = 'The token did not resolve to a Facebook Page. Confirm the Page ID and Page Access Token.';
+            } else {
+                $message = 'Facebook could not find the requested Page or post.';
+            }
 
             return new FacebookPageConnectionException($message, 422, $code);
         }
