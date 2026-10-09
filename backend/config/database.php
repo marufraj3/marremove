@@ -1,8 +1,6 @@
 <?php
 
 use Illuminate\Support\Str;
-use PDO;
-
 return [
 
     /*

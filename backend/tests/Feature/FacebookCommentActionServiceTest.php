@@ -31,6 +31,10 @@ class FacebookCommentActionServiceTest extends TestCase
     {
         parent::setUp();
 
+        // Exercise the production-only Graph path against Laravel's HTTP fake.
+        // Http::fake() below prevents any real Meta request from leaving the test process.
+        $this->app->detectEnvironment(static fn (): string => 'production');
+
         config([
             'moderation.admin_emails' => [self::ADMIN_EMAIL],
             'moderation.test_mode' => false,
@@ -324,11 +328,12 @@ class FacebookCommentActionServiceTest extends TestCase
         $hide = $this->createComment($page);
         $unhide = $this->createComment($page, ['facebook_action_state' => 'hidden']);
         $delete = $this->createComment($page);
+        $admin = $this->admin();
         $service = app(FacebookCommentActionService::class);
 
-        $service->queueManualAction($hide, 'hide', $this->admin());
-        $service->queueManualAction($unhide, 'unhide', $this->admin());
-        $service->queueManualAction($delete, 'delete', $this->admin());
+        $service->queueManualAction($hide, 'hide', $admin);
+        $service->queueManualAction($unhide, 'unhide', $admin);
+        $service->queueManualAction($delete, 'delete', $admin);
 
         Queue::assertPushedTimes(HideFacebookCommentJob::class, 1);
         Queue::assertPushedTimes(UnhideFacebookCommentJob::class, 1);
@@ -340,10 +345,11 @@ class FacebookCommentActionServiceTest extends TestCase
     {
         $page = $this->createPage();
         $comment = $this->createComment($page);
+        $admin = $this->admin();
         Http::fakeSequence()
             ->push(['id' => $comment->facebook_comment_id], 200)
             ->push(['success' => true], 200);
-        $queued = app(FacebookCommentActionService::class)->queueManualAction($comment, 'hide', $this->admin());
+        $queued = app(FacebookCommentActionService::class)->queueManualAction($comment, 'hide', $admin);
 
         app(FacebookCommentActionService::class)->execute($comment->getKey(), $queued['action_log_id'], 'hide', 1, 3);
 
@@ -355,7 +361,7 @@ class FacebookCommentActionServiceTest extends TestCase
         $this->assertNotNull($log->completed_at);
         $this->assertNull($log->error_message);
         $this->assertStringNotContainsString(self::PAGE_TOKEN, json_encode($log->toArray(), JSON_THROW_ON_ERROR));
-        $response = $this->actingAs($this->admin())->getJson('/api/moderation/actions')->assertOk();
+        $response = $this->actingAs($admin)->getJson('/api/moderation/actions')->assertOk();
         $this->assertStringNotContainsString(self::PAGE_TOKEN, $response->getContent());
     }
 

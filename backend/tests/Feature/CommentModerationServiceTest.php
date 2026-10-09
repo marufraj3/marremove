@@ -206,10 +206,10 @@ class CommentModerationServiceTest extends TestCase
     public function test_admin_override_saves_final_action_and_audit_log_without_facebook_action(): void
     {
         Queue::fake();
-        $page = $this->createPage();
+        $admin = User::factory()->create(['email' => self::ADMIN_EMAIL]);
+        $page = $this->createPage(owner: $admin);
         $comment = $this->createComment($page, 'Competitor promotion');
         $this->runAi($comment, $this->classification('hide', 'competitor_spam', 0.95, 'high', 'Redirects customers to a competitor.'));
-        $admin = User::factory()->create(['email' => self::ADMIN_EMAIL]);
 
         foreach (['keep', 'review', 'hide', 'delete'] as $action) {
             $response = $this->actingAs($admin)->patchJson('/api/moderation/comments/'.$comment->getKey().'/override', [
@@ -255,8 +255,8 @@ class CommentModerationServiceTest extends TestCase
     public function test_page_settings_are_persisted_independently_and_mirror_legacy_ai_flag(): void
     {
         $admin = User::factory()->create(['email' => self::ADMIN_EMAIL]);
-        $pageA = $this->createPage('Settings Page A');
-        $pageB = $this->createPage('Settings Page B');
+        $pageA = $this->createPage('Settings Page A', $admin);
+        $pageB = $this->createPage('Settings Page B', $admin);
 
         $this->actingAs($admin)->patchJson('/api/moderation/ai/pages/'.$pageA->getKey().'/settings', [
             'ai_enabled' => false,
@@ -289,7 +289,7 @@ class CommentModerationServiceTest extends TestCase
     public function test_threshold_order_is_validated_per_page(): void
     {
         $admin = User::factory()->create(['email' => self::ADMIN_EMAIL]);
-        $page = $this->createPage();
+        $page = $this->createPage(owner: $admin);
 
         $this->actingAs($admin)->patchJson('/api/moderation/ai/pages/'.$page->getKey().'/settings', [
             'auto_review_threshold' => 0.92,
@@ -301,7 +301,7 @@ class CommentModerationServiceTest extends TestCase
     public function test_threshold_precision_is_validated_to_match_database_storage(): void
     {
         $admin = User::factory()->create(['email' => self::ADMIN_EMAIL]);
-        $page = $this->createPage();
+        $page = $this->createPage(owner: $admin);
 
         $this->actingAs($admin)->patchJson('/api/moderation/ai/pages/'.$page->getKey().'/settings', [
             'auto_review_threshold' => 0.7001,
@@ -423,10 +423,10 @@ class CommentModerationServiceTest extends TestCase
 
     public function test_decision_explainer_resource_includes_manual_ai_threshold_and_final_fields(): void
     {
-        $page = $this->createPage();
+        $owner = User::factory()->create(['email' => self::ADMIN_EMAIL]);
+        $page = $this->createPage(owner: $owner);
         $comment = $this->createComment($page, 'Spam-like promotion');
         $final = $this->runAi($comment, $this->classification('hide', 'spam', 0.93, 'medium', 'Unsolicited promotion.'));
-        $owner = User::query()->findOrFail($page->user_id);
 
         $this->actingAs($owner)->getJson('/api/facebook/comments?page_id='.$page->getKey())
             ->assertOk()
@@ -519,10 +519,12 @@ class CommentModerationServiceTest extends TestCase
         return compact('decision', 'category', 'confidence', 'severity', 'reason');
     }
 
-    private function createPage(string $name = 'Decision Test Page'): FacebookPage
+    private function createPage(string $name = 'Decision Test Page', ?User $owner = null): FacebookPage
     {
+        $owner ??= User::factory()->create();
+
         return FacebookPage::query()->create([
-            'user_id' => User::factory()->create()->getKey(),
+            'user_id' => $owner->getKey(),
             'facebook_page_id' => 'decision-page-'.uniqid(),
             'page_name' => $name,
             'page_access_token' => self::PAGE_TOKEN,
